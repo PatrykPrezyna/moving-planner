@@ -56,3 +56,5 @@ With `DATABASE_URL` empty, items are stored in `.data/items.json` and uploaded p
 Open the page, scroll to the bottom, tap **Owner login** and enter `EDIT_PASSWORD`. The unlock is
 stored in a cookie for a year, so you only do this once per device. Tap **Lock** in the edit bar to
 sign out.
+
+just a new deployment
