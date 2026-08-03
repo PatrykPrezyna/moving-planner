@@ -32,6 +32,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ url: blob.url });
   }
 
+  if (process.env.NODE_ENV === "production") {
+    return NextResponse.json(
+      { error: "Photo uploads need a Blob store: BLOB_READ_WRITE_TOKEN is not set." },
+      { status: 503 },
+    );
+  }
+
   // Local development without Blob storage configured: keep the file in public/.
   const fs = await import("node:fs/promises");
   const path = await import("node:path");

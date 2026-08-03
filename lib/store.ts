@@ -11,6 +11,32 @@ const connectionString = process.env.DATABASE_URL ?? process.env.POSTGRES_URL ??
  */
 const usePostgres = connectionString.length > 0;
 
+export const storageMode: "postgres" | "files" = usePostgres ? "postgres" : "files";
+
+/**
+ * The file fallback writes into the deployment bundle, which is read-only on
+ * Vercel. Refuse it explicitly rather than failing later with a cryptic EROFS.
+ */
+function assertWritable(): void {
+  if (!usePostgres && process.env.NODE_ENV === "production") {
+    throw new Error(
+      "No DATABASE_URL is configured, so items cannot be saved. Connect a Postgres store in Vercel.",
+    );
+  }
+}
+
+/** Runs a trivial query so callers can report whether the database really answers. */
+export async function checkDatabase(): Promise<"connected" | "not-configured" | "error"> {
+  if (!sql) return "not-configured";
+  try {
+    await ensureSchema();
+    await sql`SELECT 1`;
+    return "connected";
+  } catch {
+    return "error";
+  }
+}
+
 type Row = {
   id: string;
   name: string;
@@ -112,6 +138,7 @@ export async function listItems(): Promise<Item[]> {
 }
 
 export async function createItem(input: ItemInput): Promise<Item> {
+  assertWritable();
   if (sql) {
     await ensureSchema();
     const rows = (await sql`
@@ -131,6 +158,7 @@ export async function createItem(input: ItemInput): Promise<Item> {
 }
 
 export async function updateItem(id: string, input: ItemInput): Promise<Item | null> {
+  assertWritable();
   if (sql) {
     await ensureSchema();
     const rows = (await sql`
@@ -159,6 +187,7 @@ export async function updateItem(id: string, input: ItemInput): Promise<Item | n
 }
 
 export async function deleteItem(id: string): Promise<boolean> {
+  assertWritable();
   if (sql) {
     await ensureSchema();
     const rows = (await sql`DELETE FROM items WHERE id = ${id} RETURNING id`) as { id: string }[];
