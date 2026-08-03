@@ -14,6 +14,7 @@ export default async function SalePage() {
       config={getSiteConfig()}
       initiallyEditing={canEdit}
       editingEnabled={Boolean(process.env.EDIT_PASSWORD)}
+      blobEnabled={Boolean(process.env.BLOB_READ_WRITE_TOKEN)}
     />
   );
 }

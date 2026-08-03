@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { SiteConfig } from "@/lib/config";
+import { readJson } from "@/lib/fetch-json";
 import type { Item, ItemInput, Status } from "@/lib/types";
 import ItemCard, { nextStatus } from "./ItemCard";
 import ItemEditor from "./ItemEditor";
@@ -13,6 +14,7 @@ type Props = {
   config: SiteConfig;
   initiallyEditing: boolean;
   editingEnabled: boolean;
+  blobEnabled: boolean;
 };
 
 const FILTERS: { key: Filter; label: string }[] = [
@@ -36,6 +38,7 @@ export default function SaleBoard({
   config,
   initiallyEditing,
   editingEnabled,
+  blobEnabled,
 }: Props) {
   const [items, setItems] = useState(initialItems);
   const [filter, setFilter] = useState<Filter>("all");
@@ -91,8 +94,7 @@ export default function SaleBoard({
         body: JSON.stringify(input),
       },
     );
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error ?? "Could not save.");
+    const data = await readJson<{ item: Item }>(response);
 
     setItems((current) =>
       sortItems(
@@ -273,6 +275,7 @@ export default function SaleBoard({
       {editorOpen && (
         <ItemEditor
           item={editorItem}
+          blobEnabled={blobEnabled}
           onCancel={() => {
             setEditorOpen(false);
             setEditorItem(null);

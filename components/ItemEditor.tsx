@@ -1,10 +1,13 @@
 "use client";
 
 import { useState } from "react";
+import { upload } from "@vercel/blob/client";
+import { readJson } from "@/lib/fetch-json";
 import { STATUSES, type Item, type ItemInput } from "@/lib/types";
 
 type Props = {
   item: Item | null;
+  blobEnabled: boolean;
   onCancel: () => void;
   onSave: (input: ItemInput) => Promise<void>;
 };
@@ -21,24 +24,52 @@ const EMPTY: ItemInput = {
   availableFrom: "",
 };
 
-/** Downscales a phone photo before upload so a 12 MP shot doesn't take forever. */
-async function shrink(file: File): Promise<Blob> {
-  const bitmap = await createImageBitmap(file);
-  const maxSide = 1600;
-  const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
-  if (scale === 1 && file.size < 1_000_000) return file;
+/**
+ * Downscales a phone photo before upload so a 12 MP shot doesn't take forever.
+ * Formats the browser cannot decode (HEIC on some devices) are uploaded as-is.
+ */
+async function shrink(file: File): Promise<File> {
+  try {
+    const bitmap = await createImageBitmap(file);
+    const maxSide = 1600;
+    const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+    if (scale === 1 && file.size < 1_000_000) return file;
 
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.round(bitmap.width * scale);
-  canvas.height = Math.round(bitmap.height * scale);
-  canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
 
-  return new Promise((resolve) =>
-    canvas.toBlob((blob) => resolve(blob ?? file), "image/jpeg", 0.85),
-  );
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/jpeg", 0.85),
+    );
+    if (!blob) return file;
+
+    return new File([blob], `${file.name.replace(/\.[^.]+$/, "")}.jpg`, { type: "image/jpeg" });
+  } catch {
+    return file;
+  }
 }
 
-export default function ItemEditor({ item, onCancel, onSave }: Props) {
+/** Straight from the browser to Blob storage, so the 4.5 MB function limit doesn't apply. */
+async function uploadToBlob(file: File): Promise<string> {
+  const blob = await upload(`sale/${file.name}`, file, {
+    access: "public",
+    handleUploadUrl: "/api/upload/token",
+  });
+  return blob.url;
+}
+
+/** Local development fallback when no Blob store is configured. */
+async function uploadViaServer(file: File): Promise<string> {
+  const body = new FormData();
+  body.append("file", file);
+  const response = await fetch("/api/upload", { method: "POST", body });
+  const data = await readJson<{ url: string }>(response);
+  return data.url;
+}
+
+export default function ItemEditor({ item, blobEnabled, onCancel, onSave }: Props) {
   const [form, setForm] = useState<ItemInput>(item ? { ...item } : EMPTY);
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -53,13 +84,10 @@ export default function ItemEditor({ item, onCancel, onSave }: Props) {
     setUploading(true);
     setError("");
     try {
-      for (const file of Array.from(files)) {
-        const body = new FormData();
-        body.append("file", new File([await shrink(file)], file.name, { type: "image/jpeg" }));
-        const response = await fetch("/api/upload", { method: "POST", body });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error ?? "Upload failed.");
-        setForm((current) => ({ ...current, photos: [...current.photos, data.url] }));
+      for (const original of Array.from(files)) {
+        const file = await shrink(original);
+        const url = blobEnabled ? await uploadToBlob(file) : await uploadViaServer(file);
+        setForm((current) => ({ ...current, photos: [...current.photos, url] }));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed.");
