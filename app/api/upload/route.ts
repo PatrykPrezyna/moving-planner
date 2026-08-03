@@ -37,7 +37,15 @@ export async function POST(request: Request) {
       // tells whoever is uploading nothing about what to fix.
       const message = error instanceof Error ? error.message : "Unknown error.";
       console.error("Blob upload failed:", error);
-      return NextResponse.json({ error: `Blob storage rejected the upload: ${message}` }, { status: 502 });
+
+      // A private store cannot serve images to buyers, so name the fix rather
+      // than passing the SDK's wording through.
+      const detail = message.includes("private store")
+        ? "The Blob store is private, so its photos cannot be shown on a public page. " +
+          "Create a Blob store with public access in Vercel and connect it to this project."
+        : `Blob storage rejected the upload: ${message}`;
+
+      return NextResponse.json({ error: detail }, { status: 502 });
     }
   }
 
