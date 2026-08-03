@@ -24,40 +24,76 @@ const EMPTY: ItemInput = {
   availableFrom: "",
 };
 
-/**
- * Downscales a phone photo before upload so a 12 MP shot doesn't take forever.
- * Formats the browser cannot decode (HEIC on some devices) are uploaded as-is.
- */
-async function shrink(file: File): Promise<File> {
+const MAX_SIDE = 1600;
+
+/** createImageBitmap rejects some camera formats that an <img> element still decodes. */
+async function decode(file: File): Promise<ImageBitmap | HTMLImageElement> {
   try {
-    const bitmap = await createImageBitmap(file);
-    const maxSide = 1600;
-    const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
-    if (scale === 1 && file.size < 1_000_000) return file;
-
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.round(bitmap.width * scale);
-    canvas.height = Math.round(bitmap.height * scale);
-    canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-
-    const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, "image/jpeg", 0.85),
-    );
-    if (!blob) return file;
-
-    return new File([blob], `${file.name.replace(/\.[^.]+$/, "")}.jpg`, { type: "image/jpeg" });
+    return await createImageBitmap(file);
   } catch {
-    return file;
+    const url = URL.createObjectURL(file);
+    try {
+      const image = new Image();
+      image.src = url;
+      await image.decode();
+      return image;
+    } catch {
+      throw new Error(
+        `Your browser cannot read "${file.name}". If this is an iPhone photo, set ` +
+          `Settings → Camera → Formats to "Most Compatible", or pick a JPEG.`,
+      );
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   }
 }
 
-/** Straight from the browser to Blob storage, so the 4.5 MB function limit doesn't apply. */
-async function uploadToBlob(file: File): Promise<string> {
-  const blob = await upload(`sale/${file.name}`, file, {
-    access: "public",
-    handleUploadUrl: "/api/upload/token",
+/**
+ * Always re-encodes to JPEG. Uploading the original risks a format like HEIC that
+ * every non-Safari browser refuses to display, and a full-size phone photo is slow
+ * to send over mobile data.
+ */
+async function toDisplayableJpeg(file: File): Promise<File> {
+  const source = await decode(file);
+  const width = source instanceof ImageBitmap ? source.width : source.naturalWidth;
+  const height = source instanceof ImageBitmap ? source.height : source.naturalHeight;
+  const scale = Math.min(1, MAX_SIDE / Math.max(width, height));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+  canvas.getContext("2d")?.drawImage(source, 0, 0, canvas.width, canvas.height);
+
+  const blob = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob(resolve, "image/jpeg", 0.85),
+  );
+  if (!blob) throw new Error(`Could not process "${file.name}".`);
+
+  return new File([blob], `${file.name.replace(/\.[^.]+$/, "") || "photo"}.jpg`, {
+    type: "image/jpeg",
   });
-  return blob.url;
+}
+
+/** Straight from the browser to Blob storage, so the 4.5 MB function limit doesn't apply. */
+async function uploadToBlob(file: File, onProgress: (percentage: number) => void): Promise<string> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120_000);
+  try {
+    const blob = await upload(`sale/${file.name}`, file, {
+      access: "public",
+      handleUploadUrl: "/api/upload/token",
+      abortSignal: controller.signal,
+      onUploadProgress: ({ percentage }) => onProgress(percentage),
+    });
+    return blob.url;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error("The upload timed out. Check your connection and try again.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 /** Local development fallback when no Blob store is configured. */
@@ -73,6 +109,7 @@ export default function ItemEditor({ item, blobEnabled, onCancel, onSave }: Prop
   const [form, setForm] = useState<ItemInput>(item ? { ...item } : EMPTY);
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
 
   function update<K extends keyof ItemInput>(key: K, value: ItemInput[K]) {
@@ -83,16 +120,27 @@ export default function ItemEditor({ item, blobEnabled, onCancel, onSave }: Prop
     if (!files?.length) return;
     setUploading(true);
     setError("");
+    const list = Array.from(files);
+
     try {
-      for (const original of Array.from(files)) {
-        const file = await shrink(original);
-        const url = blobEnabled ? await uploadToBlob(file) : await uploadViaServer(file);
+      for (const [index, original] of list.entries()) {
+        const position = list.length > 1 ? `Photo ${index + 1} of ${list.length}: ` : "";
+        setProgress(`${position}preparing…`);
+
+        const file = await toDisplayableJpeg(original);
+        const url = blobEnabled
+          ? await uploadToBlob(file, (percentage) =>
+              setProgress(`${position}uploading ${Math.round(percentage)}%`),
+            )
+          : await uploadViaServer(file);
+
         setForm((current) => ({ ...current, photos: [...current.photos, url] }));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed.");
     } finally {
       setUploading(false);
+      setProgress("");
     }
   }
 
@@ -242,7 +290,7 @@ export default function ItemEditor({ item, blobEnabled, onCancel, onSave }: Prop
               onChange={(e) => handleFiles(e.target.files)}
               className="text-sm"
             />
-            {uploading && <span className="text-sm text-muted">Uploading…</span>}
+            {uploading && <span className="text-sm font-medium text-accent">{progress}</span>}
           </div>
         </div>
 
