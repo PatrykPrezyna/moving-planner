@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { upload } from "@vercel/blob/client";
-import { readJson } from "@/lib/fetch-json";
 import { STATUSES, type Item, type ItemInput } from "@/lib/types";
 
 type Props = {
@@ -25,6 +24,9 @@ const EMPTY: ItemInput = {
 };
 
 const MAX_SIDE = 1600;
+
+/** Vercel rejects a serverless request body larger than this before it reaches the route. */
+const FUNCTION_BODY_LIMIT = 4 * 1024 * 1024;
 
 /** createImageBitmap rejects some camera formats that an <img> element still decodes. */
 async function decode(file: File): Promise<ImageBitmap | HTMLImageElement> {
@@ -96,13 +98,45 @@ async function uploadToBlob(file: File, onProgress: (percentage: number) => void
   }
 }
 
-/** Local development fallback when no Blob store is configured. */
-async function uploadViaServer(file: File): Promise<string> {
-  const body = new FormData();
-  body.append("file", file);
-  const response = await fetch("/api/upload", { method: "POST", body });
-  const data = await readJson<{ url: string }>(response);
-  return data.url;
+/**
+ * Posts to our own API, which stores the file. Same-origin, so it works
+ * wherever the page itself loads — a browser extension or network that blocks
+ * the direct connection to blob.vercel-storage.com cannot stall it.
+ * XHR rather than fetch, because fetch cannot report upload progress.
+ */
+function uploadViaServer(file: File, onProgress: (percentage: number) => void): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const body = new FormData();
+    body.append("file", file);
+
+    const request = new XMLHttpRequest();
+    request.open("POST", "/api/upload");
+    request.timeout = 120_000;
+
+    request.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) onProgress((event.loaded / event.total) * 100);
+    });
+
+    request.addEventListener("load", () => {
+      let payload: { url?: string; error?: string } | null = null;
+      try {
+        payload = JSON.parse(request.responseText);
+      } catch {
+        reject(new Error(`Unexpected ${request.status} response from the server.`));
+        return;
+      }
+      if (request.status >= 200 && request.status < 300 && payload?.url) {
+        resolve(payload.url);
+      } else {
+        reject(new Error(payload?.error || `Upload failed (${request.status}).`));
+      }
+    });
+
+    request.addEventListener("error", () => reject(new Error("The upload could not reach the server.")));
+    request.addEventListener("timeout", () => reject(new Error("The upload timed out. Check your connection and try again.")));
+
+    request.send(body);
+  });
 }
 
 export default function ItemEditor({ item, blobEnabled, onCancel, onSave }: Props) {
@@ -128,11 +162,16 @@ export default function ItemEditor({ item, blobEnabled, onCancel, onSave }: Prop
         setProgress(`${position}preparing…`);
 
         const file = await toDisplayableJpeg(original);
-        const url = blobEnabled
-          ? await uploadToBlob(file, (percentage) =>
-              setProgress(`${position}uploading ${Math.round(percentage)}%`),
-            )
-          : await uploadViaServer(file);
+        const report = (percentage: number) =>
+          setProgress(`${position}uploading ${Math.round(percentage)}%`);
+
+        // Downscaling puts photos far below the 4.5 MB serverless body limit, so
+        // the same-origin route handles them. Only oversized files need the
+        // direct-to-Blob path, which bypasses that limit.
+        const url =
+          file.size > FUNCTION_BODY_LIMIT && blobEnabled
+            ? await uploadToBlob(file, report)
+            : await uploadViaServer(file, report);
 
         setForm((current) => ({ ...current, photos: [...current.photos, url] }));
       }

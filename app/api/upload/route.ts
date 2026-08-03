@@ -4,6 +4,7 @@ import { put } from "@vercel/blob";
 import { isEditor } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 const MAX_BYTES = 8 * 1024 * 1024;
 
