@@ -29,8 +29,16 @@ export async function POST(request: Request) {
   const filename = `sale/${randomUUID()}.${extension}`;
 
   if (process.env.BLOB_READ_WRITE_TOKEN) {
-    const blob = await put(filename, file, { access: "public", contentType: file.type });
-    return NextResponse.json({ url: blob.url });
+    try {
+      const blob = await put(filename, file, { access: "public", contentType: file.type });
+      return NextResponse.json({ url: blob.url });
+    } catch (error) {
+      // Without this the failure surfaces as a bare 500 with no body, which
+      // tells whoever is uploading nothing about what to fix.
+      const message = error instanceof Error ? error.message : "Unknown error.";
+      console.error("Blob upload failed:", error);
+      return NextResponse.json({ error: `Blob storage rejected the upload: ${message}` }, { status: 502 });
+    }
   }
 
   if (process.env.NODE_ENV === "production") {
